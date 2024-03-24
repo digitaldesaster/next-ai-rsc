@@ -1,7 +1,10 @@
 import 'server-only';
 
 import { createAI, createStreamableUI, getMutableAIState } from 'ai/rsc';
-import OpenAI from 'openai';
+//import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+
+
 
 import {
   spinner,
@@ -28,80 +31,15 @@ import { StockSkeleton } from '@/components/llm-stocks/stock-skeleton';
 import { EventsSkeleton } from '@/components/llm-stocks/events-skeleton';
 import { StocksSkeleton } from '@/components/llm-stocks/stocks-skeleton';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
+// const openai = new OpenAI({
+//   apiKey: process.env.OPENAI_API_KEY || '',
+// });
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY || '', // defaults to process.env["ANTHROPIC_API_KEY"]
 });
 
-async function submitUserMessage(content: string) {
-  'use server';
-
-  const aiState = getMutableAIState<typeof AI>();
-  aiState.update([
-    ...aiState.get(),
-    {
-      role: 'user',
-      content,
-    },
-  ]);
-
-  const reply = createStreamableUI(
-    <BotMessage className="items-center">{spinner}</BotMessage>,
-  );
-
-  const completion = runOpenAICompletion(openai, {
-    model: 'gpt-3.5-turbo',
-    stream: true,
-    messages: [
-      {
-        role: 'system',
-        content: `\
-Du bist ein hilfreicher Assistent.
-Wenn ein Nutzer nach Ereignissen fragt, benutze \`get_events\`.
-Wenn ein Nutzer nach Preisen für Crypto-Währungen fragt, benutze \`get_prices\`.
-`,
-      },
-      ...aiState.get().map((info: any) => ({
-        role: info.role,
-        content: info.content,
-        name: info.name,
-      })),
-    ],
-    functions: [
-      {
-        name: 'get_prices',
-        description:
-          'Benutze diese Funktion um Preise zu Crypto-Währungen zu erhalten',
-        parameters: z.object({
-          coins: z.array(
-            z.object({
-              name: z.string().describe('Der Name der Crypto-Währung zum Beispiel:Bitcoin'),
-              ticker: z.string().describe('Der Ticker der Cryptowährung zum Beispiel:BTC'),
-            }),
-          ),
-        }),
-      },
-      {
-        name: 'get_events',
-        description:
-          'Liste 4 aussergewöhnliche und lustige fiktive Ereignisse',
-        parameters: z.object({
-          events: z.array(
-            z.object({
-              date: z
-                .string()
-                .describe('Das Datum des Ereignisses, in ISO-8601 format'),
-              headline: z.string().describe('Die Überschrift des Ereignisses'),
-              description: z.string().describe('Eine kurze Beschreibung des Ereignisses'),
-            }),
-          ),
-        }),
-      }
-    ],
-    temperature: 0,
-  });
-
-  completion.onTextContent((content: string, isFinal: boolean) => {
-  console.log(content);
+function processResponse(total_response, reply) {
   const elements = []; // This will hold both strings and React components
   let lastIndex = 0; // Tracks the last index after each processed segment
   let inCodeBlock = false; // Flag to track if we are currently in a code block
@@ -110,19 +48,18 @@ Wenn ein Nutzer nach Preisen für Crypto-Währungen fragt, benutze \`get_prices\
   // Updated regex to find code block starts and ends
   const startRegex = /(```|´´´)(\w+)?\s*/g;
   let match;
-
-  while ((match = startRegex.exec(content)) !== null) {
+  while ((match = startRegex.exec(total_response)) !== null) {
     if (!inCodeBlock) {
       // We found the start of a code block
       inCodeBlock = true;
       codeBlockStartIndex = match.index + match[0].length; // Adjust start index to exclude the delimiter and optional language identifier
-      const textBeforeCode = content.substring(lastIndex, match.index);
+      const textBeforeCode = total_response.substring(lastIndex, match.index);
       if (textBeforeCode) elements.push(textBeforeCode);
       lastIndex = startRegex.lastIndex; // Update lastIndex to the end of the current match
     } else {
       // We found the end of a code block
       inCodeBlock = false;
-      const codeBlockContent = content.substring(codeBlockStartIndex, match.index);
+      const codeBlockContent = total_response.substring(codeBlockStartIndex, match.index);
       elements.push(<CodeBlock code={codeBlockContent.trim()} />);
       lastIndex = startRegex.lastIndex; // Update lastIndex to the end of the current match
     }
@@ -130,11 +67,11 @@ Wenn ein Nutzer nach Preisen für Crypto-Währungen fragt, benutze \`get_prices\
 
   if (inCodeBlock) {
     // If we're still in a code block and there's no closing ```, consider everything till now as code
-    const ongoingCodeBlockContent = content.substring(codeBlockStartIndex);
+    const ongoingCodeBlockContent = total_response.substring(codeBlockStartIndex);
     elements.push(<CodeBlock code={ongoingCodeBlockContent.trim()} />);
-  } else if (lastIndex < content.length) {
+  } else if (lastIndex < total_response.length) {
     // Add any remaining text after the last code block or if no code blocks are present
-    const remainingText = content.substring(lastIndex);
+    const remainingText = total_response.substring(lastIndex);
     if (remainingText) elements.push(remainingText);
   }
 
@@ -144,85 +81,46 @@ Wenn ein Nutzer nach Preisen für Crypto-Währungen fragt, benutze \`get_prices\
     reply.update(<BotMessage>{elements}</BotMessage>);
   } else {
     // If there are no elements (which should be rare), just show the content as is
-    reply.update(<BotMessage>{content}</BotMessage>);
+    reply.update(<BotMessage>{total_response}</BotMessage>);
   }
+}
 
-  if (isFinal) {
+async function submitUserMessage(content: string) {
+  'use server';
+  const reply = createStreamableUI(
+    <BotMessage className="items-center">{spinner}</BotMessage>
+  );
+  let total_response = '';
+  const aiState = getMutableAIState<typeof AI>();
+  aiState.update([
+    ...aiState.get(),
+    {
+      role: 'user',
+      content,
+    },
+  ]);
+  let messages = aiState.get();
+
+  await runAsyncFnWithoutBlocking(async () => {
+    const stream = anthropic.messages.stream({
+      messages: messages,
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 1024,
+    }).on('text', (response) => {
+      total_response = total_response + response;
+      processResponse(total_response, reply);
+    });
+    const message = await stream.finalMessage();
+    content = message.content[0].text;
     reply.done();
-    aiState.done([...aiState.get(), { role: 'assistant', content: content }]);
-  }
-});
-
-
-  //
-  // completion.onTextContent((content: string, isFinal: boolean) => {
-  //
-  //   const segments = content.split("```");
-  //   <CodeBlock />
-  //
-  //   reply.update(<BotMessage>{content}</BotMessage>);
-  //   if (isFinal) {
-  //     reply.done();
-  //     aiState.done([...aiState.get(), { role: 'assistant', content }]);
-  //   }
-  // });
-
-  completion.onFunctionCall('get_events', async ({ events }) => {
-    reply.update(
-      <BotCard>
-        <EventsSkeleton />
-      </BotCard>,
-    );
-
-    console.log(events);
-    await sleep(100);
-
-    reply.done(
-      <BotCard>
-        <Events events={events} />
-      </BotCard>,
-    );
-
-
-
     aiState.done([
       ...aiState.get(),
       {
-        role: 'function',
-        name: 'get_events',
-        content: JSON.stringify(events),
+        role: 'assistant',
+        content,
       },
     ]);
   });
-
-  completion.onFunctionCall('get_prices', async ({ coins }) => {
-    reply.update(
-      <BotCard>
-        <EventsSkeleton />
-      </BotCard>,
-    );
-
-    console.log(coins);
-
-
-    await sleep(500);
-
-    reply.done(
-      <BotCard>
-        <Coins coins={coins} />
-      </BotCard>,
-    );
-
-    aiState.done([
-      ...aiState.get(),
-      {
-        role: 'function',
-        name: 'get_prices',
-        content: JSON.stringify(coins),
-      },
-    ]);
-  });
-
 
   return {
     id: Date.now(),
