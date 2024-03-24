@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { createAI, createStreamableUI, getMutableAIState } from 'ai/rsc';
-//import OpenAI from 'openai';
+import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 
 
@@ -31,9 +31,11 @@ import { StockSkeleton } from '@/components/llm-stocks/stock-skeleton';
 import { EventsSkeleton } from '@/components/llm-stocks/events-skeleton';
 import { StocksSkeleton } from '@/components/llm-stocks/stocks-skeleton';
 
-// const openai = new OpenAI({
-//   apiKey: process.env.OPENAI_API_KEY || '',
-// });
+const llm = "anthropic";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || '',
+});
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '', // defaults to process.env["ANTHROPIC_API_KEY"]
@@ -100,35 +102,102 @@ async function submitUserMessage(content: string) {
     },
   ]);
   let messages = aiState.get();
-
   await runAsyncFnWithoutBlocking(async () => {
-    const stream = anthropic.messages.stream({
-      messages: messages,
-      model: 'claude-3-haiku-20240307',
-      max_tokens: 1024,
-    }).on('text', (response) => {
-      total_response = total_response + response;
-      processResponse(total_response, reply);
-    });
-    const message = await stream.finalMessage();
-    content = message.content[0].text;
-    reply.done();
-    aiState.done([
-      ...aiState.get(),
-      {
-        role: 'assistant',
-        content,
-      },
-    ]);
-  });
+    if (llm === 'anthropic') {
+      const stream = anthropic.messages.stream({
+        messages: messages,
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 1024,
+      }).on('text', (response) => {
+        total_response = total_response + response;
+        processResponse(total_response, reply);
+      });
+      const message = await stream.finalMessage();
+      content = message.content[0].text;
+      reply.done();
+      aiState.done([
+        ...aiState.get(),
+        {
+          role: 'assistant',
+          content,
+        },
+      ]);
+    } else if (llm === 'openai') {
+      const completion = runOpenAICompletion(openai, {
+        model: 'gpt-3.5-turbo',
+        stream: true,
+        messages: [
+          {
+            role: 'system',
+            content: `Du bist ein hilfreicher Assistent`,
+          },
+          ...aiState.get().map((info: any) => ({
+            role: info.role,
+            content: info.content,
+            name: info.name,
+          })),
+        ],
+        functions: [
+          {
+            name: 'get_events',
+            description:
+              'List funny imaginary events between user highlighted dates that describe stock activity.',
+            parameters: z.object({
+              events: z.array(
+                z.object({
+                  date: z
+                    .string()
+                    .describe('The date of the event, in ISO-8601 format'),
+                  headline: z.string().describe('The headline of the event'),
+                  description: z.string().describe('The description of the event'),
+                }),
+              ),
+            }),
+          },
+        ],
+        temperature: 0,
+      });
 
+      completion.onTextContent((content: string, isFinal: boolean) => {
+        reply.update(<BotMessage>{content}</BotMessage>);
+        if (isFinal) {
+          reply.done();
+          aiState.done([...aiState.get(), { role: 'assistant', content }]);
+        }
+      });
+
+      completion.onFunctionCall('get_events', async ({ events }) => {
+        reply.update(
+          <BotCard>
+            <EventsSkeleton />
+          </BotCard>,
+        );
+
+        await sleep(1000);
+
+        reply.done(
+          <BotCard>
+            <Events events={events} />
+          </BotCard>,
+        );
+
+        aiState.done([
+          ...aiState.get(),
+          {
+            role: 'function',
+            name: 'get_events',
+            content: JSON.stringify(events),
+          },
+        ]);
+      });
+
+    }
+  });
   return {
     id: Date.now(),
     display: reply.value,
   };
 }
-
-// Define necessary types and create the AI.
 
 const initialAIState: {
   role: 'user' | 'assistant' | 'system' | 'function';

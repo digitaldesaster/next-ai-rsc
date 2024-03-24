@@ -8,6 +8,18 @@ import {
 } from '@/components/ui/icons';
 import { Button } from '@/components/ui/button';
 
+import * as React from "react"
+
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
 export async function Header() {
   return (
     <header className="sticky top-0 z-50 flex items-center justify-between w-full px-4 border-b h-14 shrink-0 bg-background backdrop-blur-xl">
@@ -34,16 +46,18 @@ export async function Header() {
             <span className="hidden ml-2 md:flex">GitHub</span>
           </a>
         </Button>
-        <Button asChild>
-          <a
-            href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel%2Fai%2Fblob%2Fmain%2Fexamples%2Fnext-ai-rsc&env=OPENAI_API_KEY&envDescription=OpenAI+API+Key&envLink=https%3A%2F%2Fplatform.openai.com%2Fapi-keys"
-            target="_blank"
-          >
-            <IconVercel className="mr-2" />
-            <span className="hidden sm:block">Deploy to Vercel</span>
-            <span className="sm:hidden">Deploy</span>
-          </a>
-        </Button>
+        <Select>
+      <SelectTrigger className="w-[180px]">
+        <SelectValue placeholder="Select a model" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          <SelectLabel>LLM Models</SelectLabel>
+          <SelectItem value="claude-3-haiku-20240307">Haiku</SelectItem>
+          <SelectItem value="gpt-3.5-turbo">GPT-3.5</SelectItem>
+        </SelectGroup>
+      </SelectContent>
+    </Select>
       </div>
     </header>
   );
